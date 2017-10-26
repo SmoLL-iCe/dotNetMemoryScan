@@ -6,34 +6,13 @@ using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
 
-
 using System.IO;
 using Microsoft.Win32.SafeHandles;
 public class DotNetScanMemory_SmoLL
 {
-    [DllImport("kernel32.dll",
-        EntryPoint = "GetStdHandle",
-        SetLastError = true,
-        CharSet = CharSet.Auto,
-        CallingConvention = CallingConvention.StdCall)]
-    private static extern IntPtr GetStdHandle(int nStdHandle);
-    [DllImport("kernel32.dll",
-        EntryPoint = "AllocConsole",
-        SetLastError = true,
-        CharSet = CharSet.Auto,
-        CallingConvention = CallingConvention.StdCall)]
-    private static extern int AllocConsole();
-    private const int STD_OUTPUT_HANDLE = -11;
-    private const int MY_CODE_PAGE = 437;
 
-
-
-
-
-
-
-
-
+    [DllImport("kernel32.dll")]
+    public static extern uint GetLastError();
     [DllImport("kernel32.dll")]
     public static extern int OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
     [DllImport("kernel32.dll")]
@@ -42,7 +21,7 @@ public class DotNetScanMemory_SmoLL
     [DllImport("kernel32.dll")]
     public static extern bool WriteProcessMemory(int hProcess, int lpBaseAddress, byte[] buffer, int size, int lpNumberOfBytesWritten);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", SetLastError = true)]
     protected static extern int VirtualQueryEx(IntPtr hProcess, IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, int dwLength);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -56,7 +35,7 @@ public class DotNetScanMemory_SmoLL
         public uint Protect;
         public uint Type;
     }
-    List<MEMORY_BASIC_INFORMATION> MemReg { get; set; }
+    List<MEMORY_BASIC_INFORMATION> MappedMemory { get; set; }
 
 
     uint PROCESS_ALL_ACCESS = 0x1F0FF;
@@ -93,132 +72,179 @@ public class DotNetScanMemory_SmoLL
         MEM_MAPPED = 0x40000,
         MEM_PRIVATE = 0x20000
     }
-
+    public static string GetSystemMessage(uint errorCode)
+    {
+        var exception = new System.ComponentModel.Win32Exception((int)errorCode);
+        return exception.Message;
+    }
+    //######################## VARS #############################
+    public UInt64 InicioScan = 0x0;
+    public UInt64 FimScan = 0xFFFFFFFF;
+    Boolean StopTheFirst = false;
+    Process Attacked;
+    List<IntPtr> AddressList = new List<IntPtr>();
+    //###########################################################
 
     protected void MemInfo(IntPtr pHandle)
     {
         IntPtr Addy = new IntPtr();
+        Addy = (IntPtr)InicioScan;
         while (true)
         {
-            MEMORY_BASIC_INFORMATION MemInfo = new MEMORY_BASIC_INFORMATION();
-            int MemDump = VirtualQueryEx(pHandle, Addy, out MemInfo, Marshal.SizeOf(MemInfo));
+            if ((UInt64)Addy > FimScan)
+            {
+                break;
+            }
+            var MBI = new MEMORY_BASIC_INFORMATION();
+            int MemDump = VirtualQueryEx(pHandle, Addy, out MBI, Marshal.SizeOf(MBI));
             if (MemDump == 0) break;
-            //not ((Mbi.Protect and PAGE_GUARD) = PAGE_GUARD)
-            if ((MemInfo.State & 0x1000) != 0 && (MemInfo.Protect & 0x100) == 0)
-                MemReg.Add(MemInfo);
-            Addy = new IntPtr(MemInfo.BaseAddress.ToInt32() + (int)MemInfo.RegionSize);
+            if (((uint)MBI.State & (uint)StateEnum.MEM_COMMIT) != 0 && 
+                !(((uint)MBI.Protect & (uint)AllocationProtectEnum.PAGE_GUARD)
+                == (uint)AllocationProtectEnum.PAGE_GUARD))
+                MappedMemory.Add(MBI);
+
+            Addy = new IntPtr(MBI.BaseAddress.ToInt32() + (int)MBI.RegionSize);
         }
     }
 
-    public String[] BytesToScan;
 
-    protected IntPtr _Scan(byte[] sIn, string[] sFor)
+
+
+
+
+
+
+
+
+
+    protected IntPtr ScanInBuff(IntPtr Address,byte[] Buff, string[] StrMask)
     {
-        int[] sBytes = new int[256]; int Pool = 0;
-        int End = sFor.Length - 1;
-        for (int i = 0; i < 256; i++)
-            sBytes[i] = sFor.Length;
-        for (int i = 0; i < End; i++)
+        int TamanhoBuf = Buff.Length;
+        int TamanhoScan = StrMask.Length;
+        int TScan = TamanhoScan - 1;
+        byte[] SigScan = new byte[TamanhoScan];
+        for (int i = 0; i < TamanhoScan; i++)
         {
-            if ((sFor[i] == "XX") == false)
+            if (StrMask[i] == "??")
+                SigScan[i] = 0x0;
+            else
+                SigScan[i] = Convert.ToByte(StrMask[i], 16);
+        }
+        int go = 0;
+        while (go <= (TamanhoBuf - TamanhoScan - 1))
+        {
+            if (Buff[go] == SigScan[0])
             {
-                sBytes[Int32.Parse(sFor[i])] = End - i;
+                for (int i = TScan; ((StrMask[i] == "??") || (Buff[go + i] == SigScan[i])); i--)
+                    if (i == 0)
+                    {
+                        if (StopTheFirst)
+                            return new IntPtr(go);
+                        else
+                            AddressList.Add((IntPtr)(Address.ToInt32() + go));
+                        break;
+                    }
+
+            }
+            go += 1;
+        }
+        return IntPtr.Zero;
+    }
+
+    public Process GetPID(string ProcessName)
+    {      
+       
+        try
+        {
+            return Process.GetProcessesByName(ProcessName)[0];
+        }
+        catch
+        {
+
+        }
+        return (Process)null;
+    }
+    public IntPtr[] ScanArray(Process P,string ArrayString )
+    {
+        EnablePrivileges.GoDebugPriv();
+        IntPtr[] Retorna = new IntPtr[1];
+        Logs.DeleteLog();
+        if (P == (Process)null)
+        {
+            Retorna = new IntPtr[1];
+            return Retorna;
+        }else
+            Attacked = Process.GetProcessById(P.Id); //ReCheck Pos Privileges
+        String[] BytesToScan = ArrayString.Split(" "[0]);
+        for (int i = 0; i < BytesToScan.Length; i++)
+            if (BytesToScan[i] == "?")
+                BytesToScan[i] = "??";
+
+
+        
+        MappedMemory = new List<MEMORY_BASIC_INFORMATION>();
+        MemInfo(Attacked.Handle);
+        for (int i = 0; i < MappedMemory.Count; i++)
+        {
+           
+            byte[] buff = new byte[MappedMemory[i].RegionSize];
+            ReadProcessMemory(Attacked.Handle, MappedMemory[i].BaseAddress, buff, MappedMemory[i].RegionSize, 0);
+            IntPtr Result = IntPtr.Zero;
+            if (buff.Length > 0)
+                Result = ScanInBuff(MappedMemory[i].BaseAddress,buff, BytesToScan);
+            if (StopTheFirst)
+            {
+                if (Result != IntPtr.Zero)
+                {
+                    Retorna = new IntPtr[0];
+                    Retorna[0] = (IntPtr)(MappedMemory[i].BaseAddress.ToInt32() + Result.ToInt32());              
+                    return Retorna;
+                }
+
             }
         }
-        //0B 00 00 00 ?? 00 00 00 14 00 00 00 14 00 00 00 ?? ??
-        while (Pool <= sIn.Length - sFor.Length)
+
+
+        if (!StopTheFirst && AddressList.Count > 0)
         {
-            for (int i = End; (sFor[i] == "XX" || sIn[Pool + i].ToString() == sFor[i]); i--)
-                if (i == 0) return new IntPtr(Pool);
-            Pool += sBytes[sIn[Pool + End]];
-        }
-        return IntPtr.Zero;
-    }
-
-
-    public IntPtr AobScan(string ProcessName)
-    {
-
-
-       // MessageBox.Show("Now I'm happy!");
-
-
-
-        for (int i = 0; i < (BytesToScan.Count() - 1); i++)
-        {
-            if (BytesToScan[i].ToLower().Contains("x"))
+            Retorna = new IntPtr[AddressList.Count];
+            for (int l = 0; l < (AddressList.Count); l++)
             {
-                BytesToScan[i] = "XX";
+                Retorna[l] = AddressList[l];
             }
+            AddressList.Clear();
+            return Retorna;
         }
-        Process[] P = Process.GetProcessesByName(ProcessName);
-        if (P.Length == 0) return IntPtr.Zero;
-        MemReg = new List<MEMORY_BASIC_INFORMATION>();
-        MemInfo(P[0].Handle);
-        for (int i = 0; i < MemReg.Count; i++)
+        return Retorna;
+    }
+
+
+
+     
+
+    public bool WriteArray(IntPtr address, string ArrayString)
+    {       
+        if (Attacked == (Process)null)
+            return false;
+        String[] BytesToScan = ArrayString.Split(" "[0]);
+        byte[] ArrayWrite = new byte[BytesToScan.Length];
+        for (int i = 0; i < BytesToScan.Length; i++)
         {
-            byte[] buff = new byte[MemReg[i].RegionSize];
-            ReadProcessMemory(P[0].Handle, MemReg[i].BaseAddress, buff, MemReg[i].RegionSize, 0);
-
-            IntPtr Result = _Scan(buff, BytesToScan);
-            if (Result != IntPtr.Zero)
-                return new IntPtr(MemReg[i].BaseAddress.ToInt32() + Result.ToInt32());
+            if (BytesToScan[i] == "?" || BytesToScan[i] == "??")
+                ArrayWrite[i] = 0;
+            else
+                ArrayWrite[i] = Convert.ToByte(BytesToScan[i], 16);
         }
-        return IntPtr.Zero;
+        // int processHandle = OpenProcess(PROCESS_ALL_ACCESS, false, p.Id);
+        return  
+            WriteProcessMemory((int)Attacked.Handle, address.ToInt32(), ArrayWrite, ArrayWrite.Length, 0);
+       
     }
 
-    public IntPtr AobScanID(int PID)
+    public Process GetChrome()
     {
-
-        for (int i = 0; i < (BytesToScan.Count() - 1); i++)
-        {
-            if (BytesToScan[i].ToLower().Contains("x"))
-            {
-                BytesToScan[i] = "XX";
-            }
-        }
-        Process P = Process.GetProcessById(PID);
-        if (P.Handle.ToInt32() == 0) return IntPtr.Zero;
-        MemReg = new List<MEMORY_BASIC_INFORMATION>();
-        MemInfo(P.Handle);
-        for (int i = 0; i < MemReg.Count; i++)
-        {
-            byte[] buff = new byte[MemReg[i].RegionSize];
-            ReadProcessMemory(P.Handle, MemReg[i].BaseAddress, buff, MemReg[i].RegionSize, 0);
-
-            IntPtr Result = _Scan(buff, BytesToScan);
-            if (Result != IntPtr.Zero)
-                return new IntPtr(MemReg[i].BaseAddress.ToInt32() + Result.ToInt32());
-        }
-        return IntPtr.Zero;
-    }
-
-
-    public IntPtr MudarPara(string processname, Int32 address, byte[] osbytes)
-    {
-        Process[] p = Process.GetProcessesByName(processname);
-
-        if (p.Length == 0)
-            return IntPtr.Zero;
-        int processHandle = OpenProcess(PROCESS_ALL_ACCESS, false, p[0].Id);
-        WriteProcessMemory(processHandle, address, osbytes, osbytes.Length, 0);
-        return IntPtr.Zero;
-    }
-
-    public IntPtr MudarParaID(int pid, Int32 address, byte[] osbytes)
-    {
-        Process p = Process.GetProcessById(pid);
-
-        if (p.Handle == IntPtr.Zero)
-            return IntPtr.Zero;
-
-        int processHandle = OpenProcess(PROCESS_ALL_ACCESS, false, p.Id);
-        WriteProcessMemory(processHandle, address, osbytes, osbytes.Length, 0);
-        return IntPtr.Zero;
-    }
-
-    public int chrome()
-    {
+       
+        Process Retorna ;
         foreach (Process proc in Process.GetProcessesByName("chrome"))
         {
             try
@@ -227,7 +253,7 @@ public class DotNetScanMemory_SmoLL
                 {
                     if (modu.FileName.Contains("pepflashplayer.dll"))
                     {
-                        return proc.Id;
+                        return proc;
                     }
                 }
             }
@@ -236,7 +262,7 @@ public class DotNetScanMemory_SmoLL
 
             }
         }
-        return 0;
+        return  (Process)null;
     }
 
 
