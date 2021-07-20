@@ -56,7 +56,7 @@ public class dotNetMemoryScan
         public IntPtr BaseAddress;
         public IntPtr AllocationBase;
         public uint AllocationProtect;
-        public uint RegionSize;
+        public UIntPtr RegionSize;
         public uint State;
         public uint Protect;
         public uint Type;
@@ -339,11 +339,13 @@ public class dotNetMemoryScan
     {
         IntPtr address = new IntPtr();
         MEMORY_BASIC_INFORMATION MBI = new MEMORY_BASIC_INFORMATION();
-        while (VirtualQueryEx(pHandle, address, out MBI, (uint)Marshal.SizeOf(MBI)) != 0)
+
+        var found = VirtualQueryEx(pHandle, address, out MBI, (uint)Marshal.SizeOf(MBI));
+        while ( found != 0)
         {
             if ((MBI.State & (uint)StateEnum.MEM_COMMIT) != 0 && (MBI.Protect & (uint)AllocationProtectEnum.PAGE_GUARD) != (uint)AllocationProtectEnum.PAGE_GUARD)
                 mapped_memory.Add(MBI);
-            address = new IntPtr(MBI.BaseAddress.ToInt64() + MBI.RegionSize);
+            address = new IntPtr(MBI.BaseAddress.ToInt64() + (uint)MBI.RegionSize);
         }
         return (mapped_memory.Count() > 0);
     }
@@ -402,9 +404,9 @@ public class dotNetMemoryScan
 
         for (int i = 0; i < mapped_memory.Count(); i++)
         {
-            byte[] buffer = new byte[mapped_memory[i].RegionSize];
+            byte[] buffer = new byte[(uint)mapped_memory[i].RegionSize];
             uint NumberOfBytesRead;
-            if (ReadProcessMemory(handle, mapped_memory[i].BaseAddress, buffer, mapped_memory[i].RegionSize, out NumberOfBytesRead) && NumberOfBytesRead > 0)
+            if (ReadProcessMemory(handle, mapped_memory[i].BaseAddress, buffer, (uint)mapped_memory[i].RegionSize, out NumberOfBytesRead) && NumberOfBytesRead > 0)
             {
                 var ret = search_pattern(buffer, 0);
                 if (ret != 0)

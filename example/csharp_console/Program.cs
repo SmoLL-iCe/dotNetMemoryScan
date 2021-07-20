@@ -8,7 +8,7 @@ namespace csharp_console
 {
     class Program
     {
-       
+
         //83 05 ?? ?? ?? ?? 0A A1
         //\x83\x05\x00\x00\x00\x00\x0A\xA1
         //xx????xx
@@ -45,7 +45,7 @@ namespace csharp_console
 
             // scan_module: scans only the static part of the module
             test2 = find_aob.scan_module("test.exe", "test.exe", "83 05 ?? ?? ?? ?? 0A A1");
-            Console.WriteLine("[module 1] result 0x{0:X16}", test1.ToInt64());
+            Console.WriteLine("[module 1] result 0x{0:X16}", test2.ToInt64());
 
             // with pattern and mask
             test1 = find_aob.scan_module("test.exe", "name.dll", @"\x83\x05\x00\x00\x00\x00\x0A\xA1", "xx????xx");
